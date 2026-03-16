@@ -62,55 +62,53 @@ export default function Home() {
     try {
       // Request microphone permission
       const mediaStream = await requestPermission();
-      
-      // Connect to WebSocket
+
+      // Connect to WebSocket — waits for onopen before resolving
       const ws = await connect(mediaStream);
-      
-      if (ws) {
-        // Start audio capture
-        startCapture(mediaStream, (audioChunk) => {
-          ws.send(JSON.stringify({
-            type: 'audio',
-            payload: audioChunk,
-            timestamp: Date.now(),
-          }));
+
+      // Start audio capture (WebSocket is guaranteed open here)
+      startCapture(mediaStream, (audioChunk) => {
+        ws.send(JSON.stringify({
+          type: 'audio',
+          payload: audioChunk,
+          timestamp: Date.now(),
+        }));
+      });
+
+      // Start VAD
+      startVAD(mediaStream);
+
+      // Handle incoming messages
+      ws.onmessage = (event) => {
+        const message = JSON.parse(event.data);
+
+        if (message.type === 'status' && message.payload.sessionId) {
+          setSessionId(message.payload.sessionId);
+          localStorage.setItem('pitchroast_session_id', message.payload.sessionId);
+          localStorage.setItem('pitchroast_session_expiry',
+            String(Date.now() + 90 * 24 * 60 * 60 * 1000));
+        }
+
+        if (message.type === 'audio' && message.payload.audio) {
+          // Decode base64 LPCM Int16 audio from Bedrock
+          const binary = atob(message.payload.audio);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          playAudio(bytes.buffer);
+        }
+      };
+
+      // Start countdown timer
+      const interval = setInterval(() => {
+        setTimeRemaining(prev => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            handleEndPitch();
+            return 0;
+          }
+          return prev - 1;
         });
-        
-        // Start VAD
-        startVAD(mediaStream);
-        
-        // Handle incoming messages
-        ws.onmessage = (event) => {
-          const message = JSON.parse(event.data);
-          
-          if (message.type === 'status' && message.payload.sessionId) {
-            setSessionId(message.payload.sessionId);
-            
-            // Store session ID in localStorage
-            localStorage.setItem('pitchroast_session_id', message.payload.sessionId);
-            localStorage.setItem('pitchroast_session_expiry', 
-              String(Date.now() + 90 * 24 * 60 * 60 * 1000));
-          }
-          
-          if (message.type === 'audio' && message.payload.audio) {
-            // Play audio response
-            const audioData = Uint8Array.from(atob(message.payload.audio), c => c.charCodeAt(0));
-            playAudio(audioData.buffer);
-          }
-        };
-        
-        // Start countdown timer
-        const interval = setInterval(() => {
-          setTimeRemaining(prev => {
-            if (prev <= 1) {
-              clearInterval(interval);
-              handleEndPitch();
-              return 0;
-            }
-            return prev - 1;
-          });
-        }, 1000);
-      }
+      }, 1000);
     } catch (error) {
       console.error('Failed to start pitch:', error);
     }

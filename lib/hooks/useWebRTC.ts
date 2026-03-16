@@ -29,7 +29,8 @@ export function useWebRTC(config: WebRTCConfig) {
     const timeout = config.connectionTimeout || 10000;
     
     connectionTimeoutRef.current = setTimeout(() => {
-      if (state.status === 'connecting') {
+      // Use wsRef to check actual connection state, not stale closure
+      if (wsRef.current && wsRef.current.readyState !== WebSocket.OPEN) {
         setState({
           status: 'error',
           error: 'Connection timeout. Please check your internet connection and try again.',
@@ -38,40 +39,34 @@ export function useWebRTC(config: WebRTCConfig) {
       }
     }, timeout);
     
-    try {
-      const ws = new WebSocket(config.wsUrl);
-      wsRef.current = ws;
-      
-      ws.onopen = () => {
-        if (connectionTimeoutRef.current) {
-          clearTimeout(connectionTimeoutRef.current);
-        }
-        setState({ status: 'connected', error: null });
-      };
-      
-      ws.onerror = (error) => {
-        if (connectionTimeoutRef.current) {
-          clearTimeout(connectionTimeoutRef.current);
-        }
-        setState({
-          status: 'error',
-          error: 'Unable to establish connection. Please check your internet connection and try again.',
-        });
-      };
-      
-      ws.onclose = () => {
-        setState({ status: 'disconnected', error: null });
-      };
-      
-      return ws;
-    } catch (error) {
-      if (connectionTimeoutRef.current) {
-        clearTimeout(connectionTimeoutRef.current);
+    return new Promise<WebSocket>((resolve, reject) => {
+      try {
+        const ws = new WebSocket(config.wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
+          setState({ status: 'connected', error: null });
+          resolve(ws);
+        };
+
+        ws.onerror = () => {
+          if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
+          const err = 'Unable to establish connection. Please check your internet connection and try again.';
+          setState({ status: 'error', error: err });
+          reject(new Error(err));
+        };
+
+        ws.onclose = () => {
+          setState({ status: 'disconnected', error: null });
+        };
+      } catch (error) {
+        if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
+        const errorMessage = error instanceof Error ? error.message : 'Connection failed';
+        setState({ status: 'error', error: errorMessage });
+        reject(error);
       }
-      const errorMessage = error instanceof Error ? error.message : 'Connection failed';
-      setState({ status: 'error', error: errorMessage });
-      throw error;
-    }
+    });
   }, [config.wsUrl, config.connectionTimeout]);
 
   const disconnect = useCallback(() => {

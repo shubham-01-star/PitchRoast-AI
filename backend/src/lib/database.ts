@@ -188,4 +188,4 @@ class DatabaseClient {
 }
 
 export default DatabaseClient;
-export { CallSession, TranscriptSegment, RoastReport, BuzzwordAnalysis };
+export type { CallSession, TranscriptSegment, RoastReport, BuzzwordAnalysis };

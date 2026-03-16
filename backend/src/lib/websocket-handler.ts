@@ -49,6 +49,44 @@ export class WebSocketHandler {
     
     this.setupConnection();
     this.enforceSessionTimeout();
+    this.startBedrockSession();
+  }
+
+  private async startBedrockSession() {
+    try {
+      console.log(`[${this.sessionId}] Starting Bedrock session, model: ${process.env.BEDROCK_MODEL_ID}`);
+      await this.bedrockClient.startSession(
+        // on audio chunk from VC
+        (audio: string) => {
+          this.vcAgentSpeaking = true;
+          this.send({ type: 'audio', payload: { audio }, timestamp: Date.now() });
+        },
+        // on transcript
+        (text: string, speaker: 'user' | 'vc') => {
+          const segment: TranscriptSegment = {
+            speaker,
+            text,
+            startTime: Date.now() - this.startTime,
+            endTime: Date.now() - this.startTime,
+          };
+          this.transcript.push(segment);
+          if (speaker === 'user' && this.buzzwordDetector.shouldInterrupt(text)) {
+            this.bedrockClient.cancelGeneration();
+          }
+        },
+        // on token usage
+        (tokens: number) => {
+          this.metrics.tokenCount += tokens;
+          this.db.logTokenUsage(this.sessionId, tokens).catch(e =>
+            this.logger.error('Failed to log token usage', e)
+          );
+        },
+      );
+      console.log(`[${this.sessionId}] Bedrock session started OK`);
+    } catch (error: any) {
+      console.error(`[${this.sessionId}] Bedrock session FAILED:`, error?.message || error);
+      this.sendError('Failed to connect to AI service: ' + (error?.message || 'Unknown'));
+    }
   }
 
   private setupConnection() {
@@ -89,82 +127,8 @@ export class WebSocketHandler {
 
   private async handleAudioChunk(audioData: string) {
     this.vadState.lastActivity = Date.now();
-    
-    if (this.isProcessingAudio) {
-      return;
-    }
-    
-    this.isProcessingAudio = true;
-    
-    try {
-      // Stream audio to Bedrock Nova 2 Sonic
-      const audioStream = await this.bedrockClient.streamAudio(audioData);
-      
-      for await (const chunk of audioStream) {
-        if (chunk.type === 'contentBlockDelta' && chunk.delta?.audio) {
-          // Send audio response back to client
-          this.send({
-            type: 'audio',
-            payload: {
-              audio: chunk.delta.audio,
-            },
-            timestamp: Date.now(),
-          });
-        }
-        
-        if (chunk.type === 'contentBlockDelta' && chunk.delta?.text) {
-          // Add to transcript
-          const transcriptSegment: TranscriptSegment = {
-            speaker: 'user',
-            text: chunk.delta.text,
-            startTime: Date.now() - this.startTime,
-            endTime: Date.now() - this.startTime,
-          };
-          this.transcript.push(transcriptSegment);
-          
-          // Check for buzzwords
-          if (this.buzzwordDetector.shouldInterrupt(chunk.delta.text)) {
-            console.log('Buzzword detected, sending interrupt signal');
-            await this.sendCancelSignal();
-          }
-        }
-        
-        if (chunk.usage) {
-          const tokens = (chunk.usage.inputTokens || 0) + (chunk.usage.outputTokens || 0);
-          this.metrics.tokenCount += tokens;
-          
-          // Log token usage to database
-          try {
-            await this.db.logTokenUsage(this.sessionId, tokens);
-          } catch (error) {
-            this.logger.error('Failed to log token usage', error);
-          }
-        }
-      }
-    } catch (error) {
-      this.logger.error('Error streaming audio to Bedrock', error, {
-        audioDataLength: audioData.length,
-        metrics: this.metrics,
-      });
-      
-      // Handle specific Bedrock errors
-      if (error instanceof Error) {
-        if (error.message.includes('authentication')) {
-          this.sendError('Authentication failed. Please check AWS credentials.');
-        } else if (error.message.includes('rate limit')) {
-          this.sendError('Rate limit exceeded. Please try again later.');
-        } else if (error.message.includes('model')) {
-          this.sendError('Model invocation error. Please try again.');
-        } else {
-          this.sendError('Failed to process audio');
-        }
-      }
-      
-      // Terminate session on critical errors
-      this.ws.close();
-    } finally {
-      this.isProcessingAudio = false;
-    }
+    // Forward audio directly into the open Bedrock session
+    this.bedrockClient.sendAudioChunk(audioData);
   }
 
   private handleControlMessage(payload: any) {
@@ -259,10 +223,16 @@ export class WebSocketHandler {
     }
   }
 
-  private handleClose() {
-    console.log(`WebSocket closed for session ${this.sessionId}`);
+  private handleClose(code: number, reason: Buffer) {
+    console.log(`[${this.sessionId}] WebSocket closed, code=${code}, reason=${reason?.toString() || 'none'}`);
     
-    // Attempt reconnection if not a normal closure
+    // Code 1000 = normal closure, 1001 = going away - don't reconnect
+    if (code === 1000 || code === 1001) {
+      this.cleanup();
+      return;
+    }
+    
+    // Attempt reconnection only for unexpected drops
     if (this.reconnectAttempts < config.session.maxReconnectAttempts) {
       this.attemptReconnection();
     } else {
@@ -340,21 +310,26 @@ export class WebSocketHandler {
     console.log(`Generating roast report for session ${this.sessionId}`);
     
     try {
+      // End the Bedrock session before generating report
+      await this.bedrockClient.endSession();
+
       const roastReport = await this.bedrockClient.generateRoastReport({
         sessionId: this.sessionId,
         transcript: this.transcript,
         metrics: this.metrics,
       });
       
-      // Send roast report to client
-      this.send({
-        type: 'roast_report',
-        payload: roastReport,
-        timestamp: Date.now(),
-      });
-      
-      // Store in database (will be implemented in Task 5)
-      console.log('Roast report generated:', roastReport);
+      this.send({ type: 'roast_report', payload: roastReport, timestamp: Date.now() });
+
+      // Store in database
+      await this.db.updateSession(this.sessionId, {
+        endTime: new Date(),
+        durationMs: Date.now() - this.startTime,
+        transcript: this.transcript,
+        roastReport,
+        tokenCount: this.metrics.tokenCount,
+      }).catch(e => this.logger.error('Failed to save session', e));
+
     } catch (error) {
       console.error('Failed to generate roast report:', error);
       this.sendError('Failed to generate roast report');
