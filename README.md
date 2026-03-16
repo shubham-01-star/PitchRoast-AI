@@ -175,6 +175,7 @@ DB_DATABASE=start
 ## Deployment
 
 See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed deployment instructions.
+For a full system diagram, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 Quick deploy:
 - Frontend: Vercel
