@@ -76,11 +76,14 @@ const wss = new WebSocketServer({ server });
 // Track active sessions
 const activeSessions = new Map<string, WebSocketHandler>();
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   console.log('New WebSocket connection established');
-  
+
+  const requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  const userId = requestUrl.searchParams.get('userId') || undefined;
+
   // Create session handler
-  const handler = new WebSocketHandler(ws);
+  const handler = new WebSocketHandler(ws, userId);
   const sessionId = handler.getSessionId();
   activeSessions.set(sessionId, handler);
   

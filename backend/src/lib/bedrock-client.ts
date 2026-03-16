@@ -349,11 +349,11 @@ export class BedrockClient {
     try {
       const response = await this.client.send(command);
       const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-      const reportText = responseBody.content[0].text;
+      const reportText = this.extractRoastReportText(responseBody);
       return this.parseRoastReport(reportText, Date.now() - startTime);
     } catch (error) {
       console.error('Roast report generation error:', error);
-      throw error;
+      return this.buildFallbackRoastReport(request, Date.now() - startTime);
     }
   }
 
@@ -384,6 +384,73 @@ TRANSCRIPT:\n${transcriptText}
   "buzzwords": [{"buzzword": "<word>", "suggestion": "<alternative>", "context": "<where>"}],
   "unansweredQuestions": ["<question>"]
 }`;
+  }
+
+  private extractRoastReportText(responseBody: any): string {
+    if (typeof responseBody?.outputText === 'string' && responseBody.outputText.trim()) {
+      return responseBody.outputText;
+    }
+
+    if (Array.isArray(responseBody?.output?.message?.content)) {
+      const textParts = responseBody.output.message.content
+        .map((item: any) => item?.text)
+        .filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0);
+
+      if (textParts.length > 0) {
+        return textParts.join('\n');
+      }
+    }
+
+    if (Array.isArray(responseBody?.content)) {
+      const textParts = responseBody.content
+        .map((item: any) => item?.text)
+        .filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0);
+
+      if (textParts.length > 0) {
+        return textParts.join('\n');
+      }
+    }
+
+    if (Array.isArray(responseBody?.outputs)) {
+      const textParts = responseBody.outputs
+        .map((item: any) => item?.text ?? item?.content?.[0]?.text)
+        .filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0);
+
+      if (textParts.length > 0) {
+        return textParts.join('\n');
+      }
+    }
+
+    if (typeof responseBody?.completion === 'string' && responseBody.completion.trim()) {
+      return responseBody.completion;
+    }
+
+    throw new Error(`Unexpected Bedrock roast report response shape: ${JSON.stringify(responseBody)}`);
+  }
+
+  private buildFallbackRoastReport(request: RoastRequest, generationTimeMs: number): RoastResponse {
+    const transcriptLength = request.transcript.length;
+    const userSegments = request.transcript.filter(segment => segment.speaker === 'user').length;
+    const vcSegments = request.transcript.filter(segment => segment.speaker === 'vc').length;
+
+    return {
+      score: transcriptLength > 0 ? 60 : 35,
+      pitchClarity:
+        transcriptLength > 0
+          ? `Fallback report: ${userSegments} founder responses captured during the session.`
+          : 'Fallback report: no usable transcript was captured for this session.',
+      confidence:
+        userSegments > 0
+          ? 'The session completed, but AI scoring was unavailable. Review the transcript manually.'
+          : 'Not enough spoken responses were captured to assess confidence.',
+      toughQuestionsHandling:
+        vcSegments > 0
+          ? `The AI interviewer produced ${vcSegments} response segments before report generation fallback triggered.`
+          : 'The interviewer session ended before enough question handling data was collected.',
+      buzzwords: [],
+      unansweredQuestions: [],
+      generationTimeMs,
+    };
   }
 
   private parseRoastReport(reportText: string, generationTimeMs: number): RoastResponse {

@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import { v4 as uuidv4 } from 'uuid';
-import { CallSession, SessionMetrics, VADState, TranscriptSegment } from '../types';
+import { CallSession, RoastReport, SessionMetrics, VADState, TranscriptSegment } from '../types';
 import { config } from '../config';
 import BedrockClient from './bedrock-client';
 import { BuzzwordDetector } from './buzzword-detector';
@@ -10,6 +10,7 @@ import DatabaseClient from './database';
 export class WebSocketHandler {
   private ws: WebSocket;
   private sessionId: string;
+  private userId: string;
   private sessionTimeout: NodeJS.Timeout | null = null;
   private reconnectAttempts: number = 0;
   private vadState: VADState;
@@ -23,10 +24,14 @@ export class WebSocketHandler {
   private buzzwordDetector: BuzzwordDetector;
   private logger: Logger;
   private db: DatabaseClient;
+  private sessionRecordPromise: Promise<void>;
+  private isFinalizing: boolean = false;
+  private hasGeneratedReport: boolean = false;
 
-  constructor(ws: WebSocket) {
+  constructor(ws: WebSocket, userId?: string) {
     this.ws = ws;
     this.sessionId = uuidv4();
+    this.userId = userId || this.sessionId;
     this.startTime = Date.now();
     this.bedrockClient = new BedrockClient();
     this.buzzwordDetector = new BuzzwordDetector();
@@ -46,10 +51,26 @@ export class WebSocketHandler {
       audioDurationMs: 0,
       reconnectionCount: 0,
     };
-    
+
+    this.sessionRecordPromise = this.createSessionRecord();
     this.setupConnection();
     this.enforceSessionTimeout();
     this.startBedrockSession();
+  }
+
+  private async createSessionRecord() {
+    try {
+      await this.db.createSession({
+        sessionId: this.sessionId,
+        userId: this.userId,
+        startTime: new Date(this.startTime),
+        tokenCount: 0,
+      });
+    } catch (error) {
+      this.logger.error('Failed to create session record', error, {
+        userId: this.userId,
+      });
+    }
   }
 
   private async startBedrockSession() {
@@ -77,9 +98,9 @@ export class WebSocketHandler {
         // on token usage
         (tokens: number) => {
           this.metrics.tokenCount += tokens;
-          this.db.logTokenUsage(this.sessionId, tokens).catch(e =>
-            this.logger.error('Failed to log token usage', e)
-          );
+          this.sessionRecordPromise
+            .then(() => this.db.logTokenUsage(this.sessionId, tokens))
+            .catch(e => this.logger.error('Failed to log token usage', e));
         },
       );
       console.log(`[${this.sessionId}] Bedrock session started OK`);
@@ -223,22 +244,10 @@ export class WebSocketHandler {
     }
   }
 
-  private handleClose(code: number, reason: Buffer) {
+  private async handleClose(code: number, reason: Buffer) {
     console.log(`[${this.sessionId}] WebSocket closed, code=${code}, reason=${reason?.toString() || 'none'}`);
-    
-    // Code 1000 = normal closure, 1001 = going away - don't reconnect
-    if (code === 1000 || code === 1001) {
-      this.cleanup();
-      return;
-    }
-    
-    // Attempt reconnection only for unexpected drops
-    if (this.reconnectAttempts < config.session.maxReconnectAttempts) {
-      this.attemptReconnection();
-    } else {
-      console.error(`Session ${this.sessionId} terminated after ${this.reconnectAttempts} failed reconnection attempts`);
-      this.cleanup();
-    }
+
+    await this.finalizeSession();
   }
 
   private attemptReconnection() {
@@ -297,16 +306,20 @@ export class WebSocketHandler {
         },
         timestamp: Date.now(),
       });
-      
-      // Trigger roast report generation
-      this.generateRoastReport();
-      
-      // Close connection
-      this.ws.close();
+
+      void this.finalizeSession().finally(() => {
+        if (this.ws.readyState === WebSocket.OPEN) {
+          this.ws.close(1000, 'Session timeout');
+        }
+      });
     }, timeoutMs);
   }
 
   private async generateRoastReport() {
+    if (this.hasGeneratedReport) {
+      return;
+    }
+
     console.log(`Generating roast report for session ${this.sessionId}`);
     
     try {
@@ -320,8 +333,10 @@ export class WebSocketHandler {
       });
       
       this.send({ type: 'roast_report', payload: roastReport, timestamp: Date.now() });
+      this.hasGeneratedReport = true;
 
       // Store in database
+      await this.sessionRecordPromise;
       await this.db.updateSession(this.sessionId, {
         endTime: new Date(),
         durationMs: Date.now() - this.startTime,
@@ -333,6 +348,64 @@ export class WebSocketHandler {
     } catch (error) {
       console.error('Failed to generate roast report:', error);
       this.sendError('Failed to generate roast report');
+    }
+  }
+
+  private buildNoSpeechReport(): RoastReport {
+    return {
+      score: 0,
+      pitchClarity: 'No speech was captured in this session, so the pitch could not be evaluated.',
+      confidence: 'Not enough audio was provided to assess delivery confidence.',
+      toughQuestionsHandling: 'No answers were recorded, so question handling could not be scored.',
+      buzzwords: [],
+      unansweredQuestions: [
+        'What problem are you solving?',
+        'Why now?',
+        'What traction or proof points do you have?',
+      ],
+      generationTimeMs: 0,
+    };
+  }
+
+  private async finalizeSession() {
+    if (this.isFinalizing) {
+      return;
+    }
+
+    this.isFinalizing = true;
+
+    try {
+      if (this.sessionTimeout) {
+        clearTimeout(this.sessionTimeout);
+        this.sessionTimeout = null;
+      }
+
+      if (this.metrics.endTime === undefined) {
+        this.metrics.endTime = Date.now();
+      }
+
+      const hasSessionContent = this.transcript.length > 0 || this.metrics.tokenCount > 0;
+
+      if (hasSessionContent) {
+        await this.generateRoastReport();
+      } else {
+        const roastReport = this.buildNoSpeechReport();
+        await this.sessionRecordPromise;
+        await this.db.updateSession(this.sessionId, {
+          endTime: new Date(),
+          durationMs: Date.now() - this.startTime,
+          transcript: [],
+          roastReport,
+          tokenCount: this.metrics.tokenCount,
+        });
+        this.hasGeneratedReport = true;
+      }
+    } catch (error) {
+      this.logger.error('Failed to finalize session', error, {
+        userId: this.userId,
+      });
+    } finally {
+      this.cleanup();
     }
   }
 
@@ -351,12 +424,9 @@ export class WebSocketHandler {
   }
 
   private cleanup() {
-    if (this.sessionTimeout) {
-      clearTimeout(this.sessionTimeout);
-      this.sessionTimeout = null;
+    if (this.metrics.endTime === undefined) {
+      this.metrics.endTime = Date.now();
     }
-    
-    this.metrics.endTime = Date.now();
     console.log(`Session ${this.sessionId} metrics:`, this.metrics);
   }
 

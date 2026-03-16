@@ -13,6 +13,14 @@ export interface WebRTCConfig {
   connectionTimeout?: number;
 }
 
+function getConnectionErrorMessage(wsUrl: string) {
+  if (wsUrl.includes('localhost') || wsUrl.includes('127.0.0.1')) {
+    return `Unable to connect to the local Pitch Roast server at ${wsUrl}. Make sure the backend is running and try again.`;
+  }
+
+  return 'Unable to establish connection to the Pitch Roast server. Please try again in a moment.';
+}
+
 export function useWebRTC(config: WebRTCConfig) {
   const [state, setState] = useState<WebRTCState>({
     status: 'idle',
@@ -31,9 +39,10 @@ export function useWebRTC(config: WebRTCConfig) {
     connectionTimeoutRef.current = setTimeout(() => {
       // Use wsRef to check actual connection state, not stale closure
       if (wsRef.current && wsRef.current.readyState !== WebSocket.OPEN) {
+        const timeoutMessage = getConnectionErrorMessage(config.wsUrl);
         setState({
           status: 'error',
-          error: 'Connection timeout. Please check your internet connection and try again.',
+          error: timeoutMessage,
         });
         wsRef.current?.close();
       }
@@ -52,7 +61,7 @@ export function useWebRTC(config: WebRTCConfig) {
 
         ws.onerror = () => {
           if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
-          const err = 'Unable to establish connection. Please check your internet connection and try again.';
+          const err = getConnectionErrorMessage(config.wsUrl);
           setState({ status: 'error', error: err });
           reject(new Error(err));
         };
@@ -94,6 +103,5 @@ export function useWebRTC(config: WebRTCConfig) {
     ...state,
     connect,
     disconnect,
-    ws: wsRef.current,
   };
 }

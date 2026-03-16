@@ -2,6 +2,22 @@ import mysql from 'mysql2/promise';
 import { config } from '../config';
 import { CallSession, TranscriptSegment, RoastReport, BuzzwordAnalysis } from '../types';
 
+function safeParseJson<T>(value: unknown, fallback: T): T {
+  if (value === null || value === undefined || value === '') {
+    return fallback;
+  }
+
+  if (typeof value !== 'string') {
+    return value as T;
+  }
+
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 class DatabaseClient {
   private pool: mysql.Pool;
 
@@ -95,8 +111,8 @@ class DatabaseClient {
         endTime: row.end_time,
         durationMs: row.duration_ms,
         audioUrl: row.audio_url,
-        transcript: row.transcript ? JSON.parse(row.transcript) : undefined,
-        roastReport: row.roast_report ? JSON.parse(row.roast_report) : undefined,
+        transcript: safeParseJson<TranscriptSegment[] | undefined>(row.transcript, undefined),
+        roastReport: safeParseJson<RoastReport | undefined>(row.roast_report, undefined),
         tokenCount: row.token_count,
         createdAt: row.created_at,
       };
@@ -122,8 +138,8 @@ class DatabaseClient {
         endTime: row.end_time,
         durationMs: row.duration_ms,
         audioUrl: row.audio_url,
-        transcript: row.transcript ? JSON.parse(row.transcript) : undefined,
-        roastReport: row.roast_report ? JSON.parse(row.roast_report) : undefined,
+        transcript: safeParseJson<TranscriptSegment[] | undefined>(row.transcript, undefined),
+        roastReport: safeParseJson<RoastReport | undefined>(row.roast_report, undefined),
         tokenCount: row.token_count,
         createdAt: row.created_at,
       }));
