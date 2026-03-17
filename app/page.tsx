@@ -76,7 +76,17 @@ export default function Home() {
 
   // Check daily usage on mount
   useEffect(() => {
-    const storedUserId = localStorage.getItem('pitchroast_user_id') || crypto.randomUUID();
+    const generateId = () => {
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+      }
+      // Fallback for HTTP (non-secure) contexts
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+      });
+    };
+    const storedUserId = localStorage.getItem('pitchroast_user_id') || generateId();
     localStorage.setItem('pitchroast_user_id', storedUserId);
     setUserId(storedUserId);
     checkDailyUsage();
