@@ -227,7 +227,7 @@ export default function Home() {
           </div>
 
           <div className="relative z-10 mx-auto flex max-w-5xl flex-col items-center text-center">
-            <div className="mb-6 inline-flex items-center gap-2 rounded-full bg-[#8b5cf6]/10 px-4 py-1.5 text-xs font-bold uppercase tracking-[0.2em] text-[#8b5cf6]">
+            <div className="mb-6 inline-flex items-center gap-2 rounded-full bg-[#8b5cf6]/10 px-4 py-1.5 text-xs font-bold uppercase tracking-[0.2em] text-white">
               <span className="relative flex h-2 w-2">
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#8b5cf6] opacity-75" />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-[#8b5cf6]" />
@@ -415,7 +415,7 @@ export default function Home() {
               Discord
             </a>
           </div>
-          <p className="text-xs font-medium text-[#6b7280]">© 2024 Pitch Roast AI. All rights reserved.</p>
+          <p className="text-xs font-medium text-[#6b7280]">© 2026 Pitch Roast AI. All rights reserved.</p>
         </div>
       </footer>
     </div>
