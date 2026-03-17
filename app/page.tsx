@@ -361,8 +361,8 @@ export default function Home() {
                   key={feature.title}
                   className="group relative flex h-full min-h-[280px] flex-col rounded-[1.25rem] border border-[#8b5cf6]/10 bg-white p-8 text-left shadow-sm transition-all hover:-translate-y-2 hover:shadow-xl hover:shadow-[#8b5cf6]/5"
                 >
-                  <div className="mb-6 inline-flex h-14 w-14 items-center justify-center rounded-xl bg-[#8b5cf6]/10 text-[#8b5cf6] transition-colors group-hover:bg-[#8b5cf6] group-hover:text-white">
-                    <span className="material-symbols-outlined text-3xl">{feature.icon}</span>
+                  <div className="mb-6 inline-flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-[#8b5cf6]/10 text-[#8b5cf6] transition-colors group-hover:bg-[#8b5cf6] group-hover:text-white">
+                    <span className="material-symbols-outlined text-2xl leading-none">{feature.icon}</span>
                   </div>
                   <h3 className="mb-3 text-xl font-extrabold">{feature.title}</h3>
                   <p className="mt-auto leading-relaxed text-[#6b7280]">{feature.description}</p>
